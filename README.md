@@ -3,10 +3,10 @@ Cotonti: Versioning package
 
 :ru: Russian doc is [here](README_ru.md)
 
-> This Cotonti CMF package for proposed to be included in core.
+> This Cotonti CMF package proposed to be included in core in future versions as base for package requirements checking. Modify of `Extensions API` and `extensions` part of Admin module will be required.
 
 Package provide pack of function to easy check versions constraints
-and extensions requirements.
+and extensions requirements for Cotonti.
 
 
 Preface
