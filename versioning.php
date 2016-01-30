@@ -5,7 +5,7 @@
  * @package API - Versioning
  * @copyright (c) Cotonti Team
  * @license https://github.com/Cotonti/Cotonti/blob/master/License.txt
- * @version 0.1.0
+ * @version 0.2.1
  */
 
 defined('COT_CODE') or die('Wrong URL');
@@ -13,6 +13,7 @@ defined('COT_CODE') or die('Wrong URL');
 // i18n fallback if no localization is defined for this package
 $L['req_no_target'] || $L['req_no_target'] = 'at least Target or Package Name required.';
 $L['req_ext_notfound'] || $L['req_ext_notfound'] = 'could not find `{$ext}` extension';
+// FIXME: should be more user readable format, see `ext_dependency_error` rc for example
 $L['req_satisfied'] || $L['req_satisfied'] = 'Requirement is satisfied: {$req}';
 $L['req_not_satisfied'] || $L['req_not_satisfied'] = 'Requirement is not satisfied: {$req}';
 $L['req_not_valid'] || $L['req_not_valid'] = 'Can\'t check requirement ({$req}): {$error_msg}';
@@ -24,14 +25,14 @@ define('COT_VERSION_WILDCARDS', 1);
  * Checks all requirements defined for some Extension
  *
  * @param array $info Extension info array, from setup file header
- * @param bool $mute_errors (optional) Disable error messages firing
- * @param bool $mute_messages (optional) Disable success messages. Disabled by default.
+ * @param bool $mute_err_msg (optional) Disable error messages firing
+ * @param bool $mute_info_msg (optional) Disable success messages. Disabled by default.
  * @return boolean Result of check
  *
  * @see cot_infoget() from `API - Extensions` package
  * @uses cot_requirements_satisfied()
  */
-function cot_check_requirements($info, $mute_errors = false, $mute_messages = false)
+function cot_check_requirements($info, $mute_err_msg = false, $mute_info_msg = false)
 {
 	foreach ($info as $key => $constraint)
 	{
@@ -40,26 +41,39 @@ function cot_check_requirements($info, $mute_errors = false, $mute_messages = fa
 			list(, $package) = explode('_', $key, 2);
 			$package = $package ?: 'Core';
 			$package = strtolower($package);
-			$check_installed = strpos($constraint, '?') === false;
-			if (!$check_installed) $constraint = str_replace('?', '', $constraint);
-			$satisfied = cot_requirements_satisfied($package, $constraint, null, $check_installed);
+			if (in_array($package, array('plugins','modules')))
+			{ // old style requirements check
+				$list = explode(',', $constraint);
+				foreach ($list as $extname)
+				{
+					$extname = trim($extname);
+					$satisfied = cot_requirements_satisfied(substr($package, 0, -1), '*', $extname);
+					if (!$satisfied) break;
+				}
+			}
+			else
+			{ // new style constraints
+				$check_installed = strpos($constraint, '?') === false;
+				if (!$check_installed) $constraint = str_replace('?', '', $constraint);
+				$satisfied = cot_requirements_satisfied($package, $constraint, null, $check_installed);
+			}
 			$requirement_str = " $package: {$info[$key]}";
 			if ($satisfied === false)
 			{
-				$mute_errors || cot_error( cot_rc('req_not_satisfied', array('req'=>$requirement_str) ) );
+				$mute_err_msg || cot_error( cot_rc('req_not_satisfied', array('req'=>$requirement_str) ) );
 			}
 			elseif ($satisfied !== true)
 			{ // get error with constraint
-				$mute_errors || cot_message(cot_rc('req_not_valid', array('req'=>$requirement_str, 'error_msg' => $satisfied) ), 'warning');
+				$mute_err_msg || cot_message(cot_rc('req_not_valid', array('req'=>$requirement_str, 'error_msg' => $satisfied) ), 'warning');
 			}
 			else
 			{
-				$mute_messages || cot_message(cot_rc('req_satisfied', array('req'=>$requirement_str)), 'ok');
+				$mute_info_msg || cot_message(cot_rc('req_satisfied', array('req'=>$requirement_str)), 'ok');
 			}
-			//if ($satisfied !== true) return false; // #FIXME uncomment
+			if ($satisfied !== true) return false; // #FIXME comment for test
 		}
 	}
-	return false; // #FIXME del
+	//return false; // #FIXME uncomment for test
 	return true;
 }
 
@@ -143,19 +157,27 @@ function cot_requirements_satisfied($target, $constraint, $package_name = null, 
 {
 	global $cot_plugins_enabled, $cot_modules;
 
-	$main_target_types = array('php','core','theme','module','plugin','system','extension');
+	$target_types = array('core','theme','admin_theme','module','plugin','system','extension');
 	$target = strtolower($target);
 
-	$last_part = substr(strrchr($target, "_"), 1);
-	if ($last_part && in_array($last_part, $main_target_types))
+	if (!$package_name)
 	{
-		$package_name = substr($target, 0, strrpos($target, '_'));
-		$target = $last_part;
-	}
-	elseif (substr($target, 0, 4) == 'php_' && extension_loaded($last_part))
-	{
-		$target = 'php';
-		$package_name = $last_part;
+		// tries to extract `package_name` from `target`
+		foreach ($target_types as $ttype) {
+			$last_part = substr($target, -(strlen($ttype)));
+			if ($last_part == $ttype)
+			{
+				$package_name = substr($target, 0, - (strlen($last_part) + 1) );
+				$target = $last_part;
+				break;
+			}
+			$last_part = '';
+		}
+		if (!$last_part && substr($target, 0, 4) == 'php_')
+		{
+			$target = 'php';
+			$package_name = substr($target, 4);
+		}
 	}
 
 	switch ($target)
@@ -180,18 +202,28 @@ function cot_requirements_satisfied($target, $constraint, $package_name = null, 
 			$sql->closeCursor();
 			if (!$current_version || ($ext_active && !$active)) return false;
 			break;
+		case 'admin_theme':
 		case 'theme':
-			$themefile = cot::$cfg['themes_dir'] . "/$package_name/$package_name.php";
+			$themefile = cot::$cfg['themes_dir'] . ($target == 'admin-theme' ? '/admin/' : '') . "/$package_name/$package_name.php";
 			if (file_exists($themefile))
 			{
 				$themeinfo = cot_infoget($themefile, 'COT_THEME');
 				$current_version = $themeinfo['Version'];
+				if (!$current_version) $themeinfo = cot_file_phpdoc($themefile);
+				$current_version = $themeinfo['version'];
 			}
 			else
 			{
 				return false;
 			}
-			$active = cot::$cfg['forcedefaulttheme'] && cot::$cfg['defaulttheme'] == $package_name;
+			if ($target != 'theme')
+			{
+				$active = cot::$cfg['admintheme'] == $package_name;
+			}
+			else
+			{
+				$active = cot::$cfg['forcedefaulttheme'] && cot::$cfg['defaulttheme'] == $package_name;
+			}
 			if ($ext_active && !$active) return false;
 			break;
 		case 'plugin':
